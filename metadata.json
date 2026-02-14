@@ -1,0 +1,5 @@
+{
+  "name": "Validador Documental Colombia",
+  "description": "Asistente para la validación y consolidación de documentos de identidad (Cédula/TI) para reclamaciones de indemnización.",
+  "requestFramePermissions": []
+}
