@@ -1,0 +1,12 @@
+fastapi==0.115.*
+uvicorn[standard]==0.34.*
+google-cloud-firestore==2.20.*
+google-cloud-storage==2.19.*
+google-cloud-secret-manager==2.21.*
+google-genai==1.14.*
+opencv-python-headless==4.11.*
+Pillow==11.1.*
+fpdf2==2.8.*
+httpx==0.28.*
+pydantic==2.10.*
+pydantic-settings==2.7.*
