@@ -13,6 +13,7 @@ from app.models import DocumentType, FlowState
 logger = logging.getLogger(__name__)
 
 COLLECTION = "document_validation_sessions"
+EXTRACTED_COLLECTION = "extracted_documents"
 
 _db: Optional[firestore.Client] = None
 
@@ -84,3 +85,22 @@ def delete_session(session_id: str) -> None:
     db = _get_db()
     db.collection(COLLECTION).document(session_id).delete()
     logger.info("Session deleted: %s", session_id)
+
+
+def save_extracted_data(
+    session_id: str,
+    label: Optional[str],
+    doc_type: str,
+    extracted_data: dict[str, Any],
+) -> None:
+    """Persist extracted document data indefinitely (no TTL)."""
+    db = _get_db()
+    doc_data = {
+        "session_id": session_id,
+        "label": label,
+        "document_type": doc_type,
+        "extracted_data": extracted_data,
+        "created_at": _now(),
+    }
+    db.collection(EXTRACTED_COLLECTION).document(session_id).set(doc_data)
+    logger.info("Extracted data saved for session: %s (label=%s)", session_id, label)

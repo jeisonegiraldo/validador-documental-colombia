@@ -4,8 +4,12 @@ import logging
 from typing import Any
 
 from app.models import (
+    CRITICAL_FIELDS,
     DocumentSide,
     DocumentType,
+    ExtractedData,
+    ExtractedField,
+    FIELD_LABELS,
     FlowState,
     FlowStatus,
     GeminiClassificationResult,
@@ -28,6 +32,7 @@ async def process_upload(
     file_bytes: bytes,
     mime_type: str,
     session_id: str | None,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Main orchestration: classify the document and advance the session state."""
 
@@ -74,9 +79,9 @@ async def process_upload(
 
     # 5. Process based on current state
     if flow_state == FlowState.AWAITING_FIRST_UPLOAD:
-        return await _handle_first_upload(session_id, session, classification, enhanced_bytes, is_pdf)
+        return await _handle_first_upload(session_id, session, classification, enhanced_bytes, is_pdf, label)
     elif flow_state == FlowState.AWAITING_SECOND_SIDE:
-        return await _handle_second_side(session_id, session, classification, enhanced_bytes, is_pdf)
+        return await _handle_second_side(session_id, session, classification, enhanced_bytes, is_pdf, label)
     else:
         return ValidateResponse(
             sessionId=session_id,
@@ -107,10 +112,12 @@ async def _handle_first_upload(
     classification: GeminiClassificationResult,
     enhanced_bytes: bytes,
     is_pdf: bool,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Handle the first document upload."""
     doc_type = classification.documentType
     side = classification.documentSide
+    extracted = classification.extractedData
 
     # Invalid document
     if not classification.isValidDocument or doc_type == DocumentType.UNKNOWN:
@@ -122,6 +129,7 @@ async def _handle_first_upload(
             isValid=False,
             isLegible=classification.isLegible,
             feedback=classification.userFeedback,
+            label=label,
         )
 
     # Not legible
@@ -134,19 +142,20 @@ async def _handle_first_upload(
             isValid=True,
             isLegible=False,
             feedback=classification.userFeedback,
+            label=label,
         )
 
     # Single-page document → complete immediately
     if doc_type in SINGLE_PAGE_DOCUMENTS:
-        return await _complete_single_page(session_id, doc_type, side, classification, enhanced_bytes, is_pdf)
+        return await _complete_single_page(session_id, doc_type, side, classification, enhanced_bytes, is_pdf, label)
 
     # Two-sided document with both sides in one image/PDF
     if classification.containsBothSides and side == DocumentSide.FULL_DOCUMENT:
-        return await _complete_full_document(session_id, doc_type, classification, enhanced_bytes, is_pdf)
+        return await _complete_full_document(session_id, doc_type, classification, enhanced_bytes, is_pdf, label)
 
     # Two-sided document: got one side, need the other
     if doc_type in TWO_SIDED_DOCUMENTS:
-        return await _save_first_side(session_id, doc_type, side, classification, enhanced_bytes)
+        return await _save_first_side(session_id, doc_type, side, classification, enhanced_bytes, label)
 
     # Fallback for unexpected cases
     return ValidateResponse(
@@ -155,6 +164,7 @@ async def _handle_first_upload(
         documentType=doc_type,
         detectedSide=side,
         feedback="No se pudo procesar el documento. Por favor, intenta de nuevo.",
+        label=label,
     )
 
 
@@ -164,6 +174,7 @@ async def _handle_second_side(
     classification: GeminiClassificationResult,
     enhanced_bytes: bytes,
     is_pdf: bool,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Handle the second side upload for two-sided documents."""
     expected_type = DocumentType(session["document_type"])
@@ -181,6 +192,7 @@ async def _handle_second_side(
             isValid=False,
             isLegible=classification.isLegible,
             feedback=classification.userFeedback,
+            label=label,
         )
 
     if not classification.isLegible:
@@ -194,6 +206,7 @@ async def _handle_second_side(
             isValid=True,
             isLegible=False,
             feedback=classification.userFeedback,
+            label=label,
         )
 
     # Document type consistency check
@@ -210,6 +223,7 @@ async def _handle_second_side(
                 f"Se espera continuar con la misma {_label(expected_type)}. "
                 f"Por favor, envía la cara faltante del mismo documento."
             ),
+            label=label,
         )
 
     # Check if same side was sent again
@@ -222,6 +236,7 @@ async def _handle_second_side(
             isValid=True,
             isLegible=True,
             feedback="Ya recibimos la cara frontal. Por favor, envía la cara TRASERA del documento.",
+            label=label,
         )
 
     if side == DocumentSide.BACK and sides.get("back"):
@@ -233,14 +248,15 @@ async def _handle_second_side(
             isValid=True,
             isLegible=True,
             feedback="Ya recibimos la cara trasera. Por favor, envía la cara FRONTAL del documento.",
+            label=label,
         )
 
     # Full document in second upload
     if classification.containsBothSides and side == DocumentSide.FULL_DOCUMENT:
-        return await _complete_full_document(session_id, expected_type, classification, enhanced_bytes, is_pdf)
+        return await _complete_full_document(session_id, expected_type, classification, enhanced_bytes, is_pdf, label)
 
     # Save second side and generate PDF
-    return await _complete_two_sides(session_id, session, expected_type, side, classification, enhanced_bytes)
+    return await _complete_two_sides(session_id, session, expected_type, side, classification, enhanced_bytes, label)
 
 
 async def _save_first_side(
@@ -249,23 +265,29 @@ async def _save_first_side(
     side: DocumentSide,
     classification: GeminiClassificationResult,
     enhanced_bytes: bytes,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Save the first side and ask for the other."""
     filename = "enhanced_front.jpg" if side == DocumentSide.FRONT else "enhanced_back.jpg"
     gcs_path = storage_service.session_path(session_id, filename)
     storage_service.upload_bytes(enhanced_bytes, gcs_path)
 
+    extracted = classification.extractedData
     side_key = "front" if side == DocumentSide.FRONT else "back"
     firestore_service.update_session(session_id, {
         "flow_state": FlowState.AWAITING_SECOND_SIDE.value,
         "document_type": doc_type.value,
         f"sides_received.{side_key}": gcs_path,
+        "extracted_data_first_side": extracted.model_dump(),
+        "label": label,
     })
 
     if side == DocumentSide.FRONT:
         status = FlowStatus.NEEDS_BACK_SIDE
     else:
         status = FlowStatus.NEEDS_FRONT_SIDE
+
+    alerts = _build_alerts(extracted, doc_type)
 
     return ValidateResponse(
         sessionId=session_id,
@@ -275,6 +297,9 @@ async def _save_first_side(
         isValid=True,
         isLegible=True,
         feedback=classification.userFeedback,
+        extractedData=extracted,
+        alerts=alerts,
+        label=label,
     )
 
 
@@ -285,6 +310,7 @@ async def _complete_two_sides(
     new_side: DocumentSide,
     classification: GeminiClassificationResult,
     enhanced_bytes: bytes,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Save the second side, generate consolidated PDF, and complete the session."""
     # Save new side
@@ -310,6 +336,22 @@ async def _complete_two_sides(
 
     signed_url = storage_service.generate_signed_url(pdf_path)
 
+    # Merge extracted data from first side with second side
+    first_side_raw = session.get("extracted_data_first_side", {})
+    first_side_data = ExtractedData(**first_side_raw) if first_side_raw else ExtractedData()
+    second_side_data = classification.extractedData
+    merged_data = _merge_extracted_data(first_side_data, second_side_data)
+
+    # Use label from session if not provided in this request
+    effective_label = label or session.get("label")
+
+    alerts = _build_alerts(merged_data, doc_type)
+    status = FlowStatus.COMPLETED
+
+    # If 2+ critical fields have low confidence, request retry
+    if _should_request_retry(alerts):
+        status = FlowStatus.NEEDS_BETTER_IMAGE
+
     # Update session
     firestore_service.update_session(session_id, {
         "flow_state": FlowState.COMPLETED.value,
@@ -317,15 +359,27 @@ async def _complete_two_sides(
         "final_pdf_path": pdf_path,
     })
 
+    # Persist extracted data indefinitely
+    if status == FlowStatus.COMPLETED:
+        firestore_service.save_extracted_data(
+            session_id=session_id,
+            label=effective_label,
+            doc_type=doc_type.value,
+            extracted_data=merged_data.model_dump(),
+        )
+
     return ValidateResponse(
         sessionId=session_id,
-        status=FlowStatus.COMPLETED,
+        status=status,
         documentType=doc_type,
         detectedSide=new_side,
         isValid=True,
         isLegible=True,
         feedback=classification.userFeedback,
-        generatedPdfUrl=signed_url,
+        generatedPdfUrl=signed_url if status == FlowStatus.COMPLETED else None,
+        extractedData=merged_data,
+        alerts=alerts,
+        label=effective_label,
     )
 
 
@@ -336,8 +390,16 @@ async def _complete_single_page(
     classification: GeminiClassificationResult,
     enhanced_bytes: bytes,
     is_pdf: bool,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Handle single-page document completion."""
+    extracted = classification.extractedData
+    alerts = _build_alerts(extracted, doc_type)
+    status = FlowStatus.COMPLETED
+
+    if _should_request_retry(alerts):
+        status = FlowStatus.NEEDS_BETTER_IMAGE
+
     # If it's already a valid PDF, use it directly
     if is_pdf and pdf_service.is_valid_pdf(enhanced_bytes):
         pdf_bytes = enhanced_bytes
@@ -360,15 +422,27 @@ async def _complete_single_page(
         "final_pdf_path": pdf_path,
     })
 
+    # Persist extracted data indefinitely
+    if status == FlowStatus.COMPLETED:
+        firestore_service.save_extracted_data(
+            session_id=session_id,
+            label=label,
+            doc_type=doc_type.value,
+            extracted_data=extracted.model_dump(),
+        )
+
     return ValidateResponse(
         sessionId=session_id,
-        status=FlowStatus.COMPLETED,
+        status=status,
         documentType=doc_type,
         detectedSide=side,
         isValid=True,
         isLegible=True,
         feedback=classification.userFeedback,
-        generatedPdfUrl=signed_url,
+        generatedPdfUrl=signed_url if status == FlowStatus.COMPLETED else None,
+        extractedData=extracted,
+        alerts=alerts,
+        label=label,
     )
 
 
@@ -378,8 +452,16 @@ async def _complete_full_document(
     classification: GeminiClassificationResult,
     file_bytes: bytes,
     is_pdf: bool,
+    label: str | None = None,
 ) -> ValidateResponse:
     """Handle full document (both sides in one image/PDF)."""
+    extracted = classification.extractedData
+    alerts = _build_alerts(extracted, doc_type)
+    status = FlowStatus.COMPLETED
+
+    if _should_request_retry(alerts):
+        status = FlowStatus.NEEDS_BETTER_IMAGE
+
     if is_pdf and pdf_service.is_valid_pdf(file_bytes):
         pdf_bytes = file_bytes
     else:
@@ -400,18 +482,72 @@ async def _complete_full_document(
         "final_pdf_path": pdf_path,
     })
 
+    # Persist extracted data indefinitely
+    if status == FlowStatus.COMPLETED:
+        firestore_service.save_extracted_data(
+            session_id=session_id,
+            label=label,
+            doc_type=doc_type.value,
+            extracted_data=extracted.model_dump(),
+        )
+
     return ValidateResponse(
         sessionId=session_id,
-        status=FlowStatus.COMPLETED,
+        status=status,
         documentType=doc_type,
         detectedSide=DocumentSide.FULL_DOCUMENT,
         isValid=True,
         isLegible=True,
         feedback=classification.userFeedback,
-        generatedPdfUrl=signed_url,
+        generatedPdfUrl=signed_url if status == FlowStatus.COMPLETED else None,
+        extractedData=extracted,
+        alerts=alerts,
+        label=label,
     )
 
 
 def _label(doc_type: DocumentType) -> str:
     from app.models import DOCUMENT_TYPE_LABELS
     return DOCUMENT_TYPE_LABELS.get(doc_type, "documento")
+
+
+def _build_alerts(extracted: ExtractedData, doc_type: DocumentType) -> list[str]:
+    """Build alert messages for critical fields with confidence < 0.85."""
+    critical = CRITICAL_FIELDS.get(doc_type, ["numeroDocumento", "nombres", "apellidos"])
+    alerts: list[str] = []
+    for field_name in critical:
+        field: ExtractedField = getattr(extracted, field_name, ExtractedField())
+        if field.value is not None and field.confidence < 0.85:
+            label = FIELD_LABELS.get(field_name, field_name)
+            pct = int(field.confidence * 100)
+            alerts.append(f"Confianza baja en '{label}' ({pct}%). Verifique manualmente.")
+    return alerts
+
+
+def _should_request_retry(alerts: list[str]) -> bool:
+    """Return True if 2+ critical fields have low confidence."""
+    return len(alerts) >= 2
+
+
+def _merge_extracted_data(first: ExtractedData, second: ExtractedData) -> ExtractedData:
+    """Merge two ExtractedData instances: second-side non-null fields overwrite first-side nulls.
+
+    For fields present in both sides, the one with higher confidence wins.
+    """
+    merged = {}
+    for field_name in ExtractedData.model_fields:
+        first_field: ExtractedField = getattr(first, field_name)
+        second_field: ExtractedField = getattr(second, field_name)
+
+        if second_field.value is not None and first_field.value is None:
+            merged[field_name] = second_field
+        elif first_field.value is not None and second_field.value is None:
+            merged[field_name] = first_field
+        elif first_field.value is not None and second_field.value is not None:
+            # Both have values — pick higher confidence
+            merged[field_name] = second_field if second_field.confidence >= first_field.confidence else first_field
+        else:
+            # Both null
+            merged[field_name] = first_field
+
+    return ExtractedData(**merged)

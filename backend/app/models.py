@@ -60,11 +60,92 @@ DOCUMENT_TYPE_LABELS = {
 }
 
 
+# --- Extracted data ---
+
+class ExtractedField(BaseModel):
+    value: Optional[str] = None
+    confidence: float = 0.0
+
+
+class ExtractedData(BaseModel):
+    # Common (Cédula, Tarjeta ID)
+    numeroDocumento: ExtractedField = Field(default_factory=ExtractedField)
+    nombres: ExtractedField = Field(default_factory=ExtractedField)
+    apellidos: ExtractedField = Field(default_factory=ExtractedField)
+    fechaNacimiento: ExtractedField = Field(default_factory=ExtractedField)
+    lugarNacimiento: ExtractedField = Field(default_factory=ExtractedField)
+    sexo: ExtractedField = Field(default_factory=ExtractedField)
+    fechaExpedicion: ExtractedField = Field(default_factory=ExtractedField)
+    lugarExpedicion: ExtractedField = Field(default_factory=ExtractedField)
+    # RC Nacimiento — padres
+    nombresPadre: ExtractedField = Field(default_factory=ExtractedField)
+    apellidosPadre: ExtractedField = Field(default_factory=ExtractedField)
+    nombresMadre: ExtractedField = Field(default_factory=ExtractedField)
+    apellidosMadre: ExtractedField = Field(default_factory=ExtractedField)
+    # RC Matrimonio — contrayentes
+    contrayente1Nombres: ExtractedField = Field(default_factory=ExtractedField)
+    contrayente1Apellidos: ExtractedField = Field(default_factory=ExtractedField)
+    contrayente1Documento: ExtractedField = Field(default_factory=ExtractedField)
+    contrayente2Nombres: ExtractedField = Field(default_factory=ExtractedField)
+    contrayente2Apellidos: ExtractedField = Field(default_factory=ExtractedField)
+    contrayente2Documento: ExtractedField = Field(default_factory=ExtractedField)
+    # RC Defunción
+    fechaDefuncion: ExtractedField = Field(default_factory=ExtractedField)
+    lugarDefuncion: ExtractedField = Field(default_factory=ExtractedField)
+
+
+# Critical fields per document type (trigger alerts if confidence < 0.85)
+CRITICAL_FIELDS: dict[DocumentType, list[str]] = {
+    DocumentType.CEDULA_CIUDADANIA: [
+        "numeroDocumento", "nombres", "apellidos", "fechaNacimiento",
+    ],
+    DocumentType.TARJETA_IDENTIDAD: [
+        "numeroDocumento", "nombres", "apellidos", "fechaNacimiento",
+    ],
+    DocumentType.REGISTRO_CIVIL_NACIMIENTO: [
+        "numeroDocumento", "nombres", "apellidos", "fechaNacimiento",
+        "nombresPadre", "apellidosPadre", "nombresMadre", "apellidosMadre",
+    ],
+    DocumentType.REGISTRO_CIVIL_MATRIMONIO: [
+        "numeroDocumento", "nombres", "apellidos",
+        "contrayente1Nombres", "contrayente1Apellidos",
+        "contrayente2Nombres", "contrayente2Apellidos",
+    ],
+    DocumentType.REGISTRO_CIVIL_DEFUNCION: [
+        "numeroDocumento", "nombres", "apellidos", "fechaDefuncion",
+    ],
+}
+
+FIELD_LABELS: dict[str, str] = {
+    "numeroDocumento": "Número de documento",
+    "nombres": "Nombres",
+    "apellidos": "Apellidos",
+    "fechaNacimiento": "Fecha de nacimiento",
+    "lugarNacimiento": "Lugar de nacimiento",
+    "sexo": "Sexo",
+    "fechaExpedicion": "Fecha de expedición",
+    "lugarExpedicion": "Lugar de expedición",
+    "nombresPadre": "Nombres del padre",
+    "apellidosPadre": "Apellidos del padre",
+    "nombresMadre": "Nombres de la madre",
+    "apellidosMadre": "Apellidos de la madre",
+    "contrayente1Nombres": "Nombres contrayente 1",
+    "contrayente1Apellidos": "Apellidos contrayente 1",
+    "contrayente1Documento": "Documento contrayente 1",
+    "contrayente2Nombres": "Nombres contrayente 2",
+    "contrayente2Apellidos": "Apellidos contrayente 2",
+    "contrayente2Documento": "Documento contrayente 2",
+    "fechaDefuncion": "Fecha de defunción",
+    "lugarDefuncion": "Lugar de defunción",
+}
+
+
 # --- Request / Response ---
 
 class ValidateRequest(BaseModel):
     fileUrl: str = Field(..., description="URL pública del archivo (imagen o PDF)")
     sessionId: Optional[str] = Field(None, description="ID de sesión existente (para segunda cara)")
+    label: Optional[str] = Field(None, description="Etiqueta opcional asignada por el orquestador (ej: cedula_reclamante)")
 
 
 class ValidateResponse(BaseModel):
@@ -76,6 +157,9 @@ class ValidateResponse(BaseModel):
     isLegible: bool = False
     feedback: str = ""
     generatedPdfUrl: Optional[str] = None
+    extractedData: Optional[ExtractedData] = None
+    alerts: list[str] = Field(default_factory=list)
+    label: Optional[str] = None
 
 
 class SessionResponse(BaseModel):
@@ -96,3 +180,4 @@ class GeminiClassificationResult(BaseModel):
     isLegible: bool = False
     containsBothSides: bool = False
     userFeedback: str = ""
+    extractedData: ExtractedData = Field(default_factory=ExtractedData)

@@ -71,6 +71,7 @@ async def validate_document(request: ValidateRequest):
             file_bytes=file_bytes,
             mime_type=mime_type,
             session_id=request.sessionId,
+            label=request.label,
         )
 
         return result

@@ -13,6 +13,8 @@ from app.config import get_gemini_api_key, get_settings
 from app.models import (
     DocumentSide,
     DocumentType,
+    ExtractedData,
+    ExtractedField,
     GeminiClassificationResult,
 )
 
@@ -30,7 +32,7 @@ def _get_client() -> genai.Client:
 
 
 CLASSIFICATION_PROMPT = """\
-Eres un experto en documentos de identidad colombianos. Analiza la imagen proporcionada y clasifícala.
+Eres un experto en documentos de identidad colombianos. Analiza la imagen proporcionada, clasifícala y extrae todos los datos visibles.
 
 TIPOS DE DOCUMENTO que debes identificar:
 - cedula_ciudadania: Cédula de Ciudadanía colombiana (documento plastificado con foto, nombre, número)
@@ -47,7 +49,7 @@ CARAS del documento:
 - single_page: Documento de una sola página (registros civiles)
 - unknown: No se puede determinar
 
-INSTRUCCIONES:
+INSTRUCCIONES DE CLASIFICACIÓN:
 1. Determina el tipo de documento
 2. Determina qué cara se muestra
 3. Evalúa si es un documento válido (no una fotocopia de mala calidad, no un documento de otro país, no algo completamente diferente)
@@ -55,18 +57,48 @@ INSTRUCCIONES:
 5. Indica si la imagen contiene ambas caras del documento
 6. Proporciona retroalimentación útil en español sencillo para el usuario
 
-{context}
+INSTRUCCIONES DE EXTRACCIÓN DE DATOS:
+Extrae todos los campos visibles del documento. Para cada campo devuelve:
+- "value": El valor extraído (string) o null si no es visible/legible
+- "confidence": Un número entre 0.0 y 1.0 indicando tu confianza en la extracción
 
-Responde ÚNICAMENTE con JSON válido con esta estructura exacta:
-{{
-  "documentType": "cedula_ciudadania|tarjeta_identidad|registro_civil_nacimiento|registro_civil_matrimonio|registro_civil_defuncion|unknown",
-  "documentSide": "front|back|full_document|single_page|unknown",
-  "isValidDocument": true/false,
-  "isLegible": true/false,
-  "containsBothSides": true/false,
-  "userFeedback": "Mensaje descriptivo en español"
-}}
+REGLAS DE FORMATO:
+- Fechas: DD/MM/YYYY (ej: 01/01/1990)
+- Nombres y apellidos: MAYÚSCULAS (ej: "JEISON EDUARDO")
+- Número de documento: solo dígitos (ej: "1234567890")
+- Sexo: "M" o "F"
+- Lugares: MAYÚSCULAS (ej: "MEDELLÍN, ANTIOQUIA")
+
+CAMPOS A EXTRAER según tipo de documento:
+- Cédula/Tarjeta de Identidad: numeroDocumento, nombres, apellidos, fechaNacimiento, lugarNacimiento, sexo, fechaExpedicion, lugarExpedicion
+- Registro Civil de Nacimiento: numeroDocumento, nombres, apellidos, fechaNacimiento, lugarNacimiento, sexo, nombresPadre, apellidosPadre, nombresMadre, apellidosMadre
+- Registro Civil de Matrimonio: numeroDocumento, contrayente1Nombres, contrayente1Apellidos, contrayente1Documento, contrayente2Nombres, contrayente2Apellidos, contrayente2Documento
+- Registro Civil de Defunción: numeroDocumento, nombres, apellidos, fechaDefuncion, lugarDefuncion
+
+Para campos que NO aplican al tipo de documento detectado, devuelve {{"value": null, "confidence": 0.0}}.
+Para campos que aplican pero NO son legibles, devuelve {{"value": null, "confidence": 0.0}}.
+
+{context}
 """
+
+_EXTRACTED_FIELD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "string", "nullable": True},
+        "confidence": {"type": "number"},
+    },
+    "required": ["value", "confidence"],
+}
+
+_EXTRACTED_DATA_FIELDS = [
+    "numeroDocumento", "nombres", "apellidos",
+    "fechaNacimiento", "lugarNacimiento", "sexo",
+    "fechaExpedicion", "lugarExpedicion",
+    "nombresPadre", "apellidosPadre", "nombresMadre", "apellidosMadre",
+    "contrayente1Nombres", "contrayente1Apellidos", "contrayente1Documento",
+    "contrayente2Nombres", "contrayente2Apellidos", "contrayente2Documento",
+    "fechaDefuncion", "lugarDefuncion",
+]
 
 
 async def classify_document(
@@ -116,6 +148,14 @@ async def classify_document(
                             "isLegible": {"type": "boolean"},
                             "containsBothSides": {"type": "boolean"},
                             "userFeedback": {"type": "string"},
+                            "extractedData": {
+                                "type": "object",
+                                "properties": {
+                                    field: _EXTRACTED_FIELD_SCHEMA
+                                    for field in _EXTRACTED_DATA_FIELDS
+                                },
+                                "required": _EXTRACTED_DATA_FIELDS,
+                            },
                         },
                         "required": [
                             "documentType",
@@ -124,6 +164,7 @@ async def classify_document(
                             "isLegible",
                             "containsBothSides",
                             "userFeedback",
+                            "extractedData",
                         ],
                     },
                 ),
@@ -131,6 +172,21 @@ async def classify_document(
 
             result_text = response.text
             result_data = json.loads(result_text)
+
+            # Parse extractedData into model
+            raw_extracted = result_data.pop("extractedData", {})
+            extracted_fields = {}
+            for field_name in _EXTRACTED_DATA_FIELDS:
+                field_val = raw_extracted.get(field_name, {})
+                if isinstance(field_val, dict):
+                    extracted_fields[field_name] = ExtractedField(
+                        value=field_val.get("value"),
+                        confidence=float(field_val.get("confidence", 0.0)),
+                    )
+                else:
+                    extracted_fields[field_name] = ExtractedField()
+            result_data["extractedData"] = ExtractedData(**extracted_fields)
+
             return GeminiClassificationResult(**result_data)
 
         except Exception as e:
