@@ -25,3 +25,9 @@ resource "google_project_iam_member" "secrets" {
   role    = "roles/secretmanager.secretAccessor"
   member  = "serviceAccount:${google_service_account.cloud_run.email}"
 }
+
+resource "google_service_account_iam_member" "sign_blobs" {
+  service_account_id = google_service_account.cloud_run.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:${google_service_account.cloud_run.email}"
+}
