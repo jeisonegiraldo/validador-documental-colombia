@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 _client: Optional[storage.Client] = None
 
 
+def _get_client() -> storage.Client:
+    global _client
+    if _client is None:
+        _client = storage.Client(project=get_settings().GCP_PROJECT_ID)
+    return _client
+
+
 def _get_bucket() -> storage.Bucket:
     settings = get_settings()
     return _get_client().bucket(settings.GCS_BUCKET_NAME)
