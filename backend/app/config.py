@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     GCP_PROJECT_ID: str = ""
-    GCS_BUCKET_NAME: str = "validador-documental-colombia"
+    GCS_BUCKET_NAME: str = "validador-documental-col-docs"
     GEMINI_API_KEY: str = ""
     GEMINI_API_KEY_SECRET_NAME: str = "gemini-api-key"
     GEMINI_MODEL: str = "gemini-2.0-flash"

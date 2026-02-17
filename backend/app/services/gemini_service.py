@@ -100,7 +100,6 @@ async def classify_document(
                 model=settings.GEMINI_MODEL,
                 contents=[file_part, prompt],
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=2048),
                     response_mime_type="application/json",
                     response_schema={
                         "type": "object",
