@@ -14,27 +14,6 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 _client: Optional[storage.Client] = None
-_signing_credentials: Optional[compute_engine.IDTokenCredentials] = None
-
-
-def _get_client() -> storage.Client:
-    global _client
-    if _client is None:
-        _client = storage.Client(project=get_settings().GCP_PROJECT_ID)
-    return _client
-
-
-def _get_signing_credentials():
-    """Get credentials capable of signing, using IAM signBlob on Cloud Run."""
-    global _signing_credentials
-    if _signing_credentials is None:
-        credentials, _ = google.auth.default()
-        if isinstance(credentials, compute_engine.Credentials):
-            _signing_credentials = credentials
-        else:
-            # Local dev — credentials can sign directly
-            _signing_credentials = None
-    return _signing_credentials
 
 
 def _get_bucket() -> storage.Bucket:
@@ -64,34 +43,28 @@ def download_bytes(gs_path: str) -> bytes:
 def generate_signed_url(gs_path: str) -> str:
     """Generate a signed URL for a GCS object.
 
-    On Cloud Run (Compute Engine credentials), uses IAM signBlob via the
-    service_account_email so no private key is needed locally.
+    On Cloud Run (Compute Engine credentials), refreshes the token first
+    and uses IAM signBlob via service_account_email + access_token.
     """
     settings = get_settings()
     bucket = _get_bucket()
     blob_name = gs_path.replace(f"gs://{bucket.name}/", "")
     blob = bucket.blob(blob_name)
 
-    signing_creds = _get_signing_credentials()
-    if signing_creds is not None and isinstance(signing_creds, compute_engine.Credentials):
+    credentials, _ = google.auth.default()
+
+    if isinstance(credentials, compute_engine.Credentials):
+        # Cloud Run: refresh to get a valid token, then use IAM signBlob
+        credentials.refresh(auth_requests.Request())
         url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=settings.SIGNED_URL_EXPIRATION_MINUTES),
             method="GET",
-            service_account_email=signing_creds.service_account_email,
-            access_token=signing_creds.token,
+            service_account_email=credentials.service_account_email,
+            access_token=credentials.token,
         )
-        # If token was not yet fetched, refresh and retry
-        if not signing_creds.token:
-            signing_creds.refresh(auth_requests.Request())
-            url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(minutes=settings.SIGNED_URL_EXPIRATION_MINUTES),
-                method="GET",
-                service_account_email=signing_creds.service_account_email,
-                access_token=signing_creds.token,
-            )
     else:
+        # Local dev with service account key
         url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=settings.SIGNED_URL_EXPIRATION_MINUTES),
