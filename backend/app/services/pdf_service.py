@@ -47,7 +47,7 @@ def generate_two_sided_pdf(
     pdf.cell(0, 8, "Cara Trasera", ln=True, align="L")
     _place_image(pdf, back_bytes, 20, pdf.get_y(), usable_width, half_height)
 
-    return pdf.output()
+    return bytes(pdf.output())
 
 
 def generate_single_page_pdf(
@@ -73,7 +73,7 @@ def generate_single_page_pdf(
 
     _place_image(pdf, image_bytes, 20, pdf.get_y(), usable_width, max_height)
 
-    return pdf.output()
+    return bytes(pdf.output())
 
 
 def is_valid_pdf(data: bytes) -> bool:
